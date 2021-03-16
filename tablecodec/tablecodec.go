@@ -16,6 +16,7 @@ package tablecodec
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"time"
 
@@ -37,10 +38,24 @@ var (
 )
 
 const (
-	idLen     = 8
-	prefixLen = 1 + idLen /*tableID*/ + 2
+	// Encoding/decoding depends on little/big endian. You shouldn't try to find out the endianness of your machine.
+	// Use utility functions in codec package (like codec.EncodeInt, codec.DecodeInt).
+	//
+	// Key/Value format
+	// - Row data:
+	// Key： tablePrefix_tableID_recordPrefixSep_rowID
+	// Value: [col1, col2, col3, col4]
+	// - Unique index:
+	// Key: tablePrefix_tableID_indexPrefixSep_indexID_indexColumnsValue
+	// Value: rowID
+	// - Non-unique index: https://stackoverflow.com/a/39734089/9057530
+	// Key: tablePrefix_tableID_indexPrefixSep_indexID_ColumnsValue_rowID
+	// Value：null
+
+	idLen     = 8                         /* [tableID] or [rowID] */
+	prefixLen = 1 + idLen /*tableID*/ + 2 /*_r*/
 	// RecordRowKeyLen is public for calculating average row size.
-	RecordRowKeyLen       = prefixLen + idLen /*handle*/
+	RecordRowKeyLen       = prefixLen + idLen /*handle*/ /*t[tableID]_r[handle]*/
 	tablePrefixLength     = 1
 	recordPrefixSepLength = 2
 )
@@ -66,12 +81,24 @@ func EncodeRowKeyWithHandle(tableID int64, handle int64) kv.Key {
 	buf := make([]byte, 0, RecordRowKeyLen)
 	buf = appendTableRecordPrefix(buf, tableID)
 	buf = codec.EncodeInt(buf, handle)
-	return buf
+	return buf /* t[tableID]_r[handle] */
 }
 
 // DecodeRecordKey decodes the key and gets the tableID, handle.
 func DecodeRecordKey(key kv.Key) (tableID int64, handle int64, err error) {
-	/* Your code here */
+	/* t[tableID]_r[handle] */
+	//tableIDBytes := key[1:9]
+	//handleBytes := key[11:19]
+	expectedLen := 19
+	if len(key) != expectedLen {
+		err = errors.New(fmt.Sprintf("key length error. len=%v, expected=%v", len(key), expectedLen))
+		return
+	}
+
+	key = key[1:]
+	key, tableID, err = codec.DecodeInt(key)
+	key = key[2:]
+	key, handle, err = codec.DecodeInt(key)
 	return
 }
 
@@ -83,7 +110,7 @@ func appendTableIndexPrefix(buf []byte, tableID int64) []byte {
 	return buf
 }
 
-// EncodeIndexSeekKey encodes an index value to kv.Key.
+// EncodeIndexSeekKey encodes an index value to kv.Key. /* t[tableID]_i[idxID][encodeValues] */
 func EncodeIndexSeekKey(tableID int64, idxID int64, encodedValue []byte) kv.Key {
 	key := make([]byte, 0, prefixLen+idLen+len(encodedValue))
 	key = appendTableIndexPrefix(key, tableID)
@@ -94,8 +121,26 @@ func EncodeIndexSeekKey(tableID int64, idxID int64, encodedValue []byte) kv.Key 
 
 // DecodeIndexKeyPrefix decodes the key and gets the tableID, indexID, indexValues.
 func DecodeIndexKeyPrefix(key kv.Key) (tableID int64, indexID int64, indexValues []byte, err error) {
-	/* Your code here */
-	return tableID, indexID, indexValues, nil
+	/*
+		t[tableID]_i[idxID][encodeVals]
+		0: t
+		1-8: tableID
+		9: _
+		10: i
+		11_18: idxID
+		19~ : encodeVals
+	*/
+	expectedMinLen := 19
+	if len(key) < expectedMinLen {
+		err = errors.New(fmt.Sprintf("key is too short. MinLen=%v, actualLen=%v", expectedMinLen, len(key)))
+		return
+	}
+
+	key = key[1:]
+	key, tableID, err = codec.DecodeInt(key)
+	key = key[2:]
+	indexValues, indexID, err = codec.DecodeInt(key)
+	return
 }
 
 // DecodeIndexKey decodes the key and gets the tableID, indexID, indexValues.
